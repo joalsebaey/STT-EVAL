@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
 
-def create_notebook():
+def generate_notebook():
     nb = {
         "cells": [],
         "metadata": {
@@ -31,51 +31,46 @@ def create_notebook():
         "nbformat_minor": 5
     }
 
-    def add_cell(cell_type, source_lines):
-        # ensure lines have trailing \n except possibly the last, or format properly as list of strings
-        formatted_lines = []
-        for i, line in enumerate(source_lines):
-            if i < len(source_lines) - 1:
-                formatted_lines.append(line if line.endswith("\n") else line + "\n")
-            else:
-                formatted_lines.append(line)
+    def add_cell(cell_type, lines):
+        formatted = [l if l.endswith("\n") else l + "\n" for l in lines[:-1]]
+        if lines:
+            formatted.append(lines[-1])
         cell = {
             "cell_type": cell_type,
             "metadata": {},
-            "source": formatted_lines
+            "source": formatted
         }
         if cell_type == "code":
             cell["execution_count"] = None
             cell["outputs"] = []
         nb["cells"].append(cell)
 
-    # 1. Title Markdown
+    # ------------------ Cell 0: Header Markdown ------------------
     add_cell("markdown", [
-        "# 🎙️ مفكرة تقييم موديلات التعرف على الصوت (STT Evaluation Notebook)",
+        "# 🎙️ STT EVAL — Arabic Speech-to-Text Evaluation & Robustness Notebook",
         "",
-        "**متوافقة مع Google Colab ✅**",
+        "**Google Colab & GPU Ready ✅**",
         "",
-        "هذه المفكرة تتيح لك اختبار وتقييم أي موديل للتعرف على الصوت (مثل Whisper) باستخدام بياناتك الخاصة، واختبار مدى تحمله للضوضاء والمؤثرات الصوتية (Robustness & Noise Testing).",
+        "This notebook provides an end-to-end evaluation and stress-testing pipeline for Arabic STT models (Whisper variants, fine-tuned models, and custom architectures).",
         "",
-        "**المميزات:**",
-        "- ✅ دعم أي موديل Whisper من HuggingFace أو موديل محلي الصنع",
-        "- ✅ رفع بيانات مخصصة (CSV + ملفات صوت أو ملف ZIP) مباشرة في Colab",
-        "- ✅ حساب WER و CER والتحليل التفصيلي للأخطاء (Sub, Del, Ins)",
-        "- ✅ **اختبار المتانة والضوضاء (Robustness)**: ضوضاء بيضاء (White Noise)، جودة هاتف (Telephone)، تسريع/تبطيء (Speed)، صدى (Reverb)، وخفض الصوت (Volume)",
-        "- ✅ مشغّل صوت مدمج للاستماع للأخطاء ومقارنة الصوت مع النويز",
-        "- ✅ تصدير النتائج كـ CSV و JSON وتنزيلها تلقائياً"
+        "### Key Capabilities:",
+        "- 🎯 **Dialectal Arabic Support**: Evaluates across Arab dialects using the `oddadmix/dialectal-arabic-lahgtna-v2` streaming dataset.",
+        "- 📁 **Flexible Ingestion**: Stream from Hugging Face, upload `.zip`, upload individual files, connect Google Drive, or use Google FLEURS.",
+        "- 🔊 **Acoustic Robustness Suite**: Multi-level White Noise (20dB, 10dB, 5dB), Telephony compression (300-3400Hz, 8kHz, $\mu$-law), Speed (0.85x, 1.15x), Gain (-25dB), and Room Reverb (RT60=0.5s).",
+        "- 📊 **Deep Diagnostics**: WER/CER per dialect, S/D/I rates, 95% Bootstrap CI, RTF throughput, failure flags (hallucinations & repetition loops).",
+        "- 🎧 **Embedded Audio Players**: Listen to worst-case errors and compare clean vs. corrupted audio directly in the notebook."
     ])
 
-    # 2. Setup Code
+    # ------------------ Cell 1: Setup & Dependencies ------------------
     add_cell("code", [
         "# ═══════════════════════════════════════════════════════════════",
-        "# ⚙️ الخطوة 0: تثبيت المتطلبات وإعداد البيئة",
+        "# ⚙️ Step 0: Install Dependencies & Setup Environment",
         "# ═══════════════════════════════════════════════════════════════",
-        "# شغّل هذه الخلية مرة واحدة فقط عند فتح النوتبوك",
         "",
         "!pip install -q transformers accelerate torch torchaudio librosa soundfile jiwer datasets tqdm pandas matplotlib scipy",
         "",
         "import os, sys, json, time, re, tempfile, zipfile",
+        "from itertools import islice",
         "from pathlib import Path",
         "from dataclasses import asdict, dataclass",
         "from typing import Callable, List, Optional, Sequence, Union",
@@ -83,8 +78,6 @@ def create_notebook():
         "",
         "import numpy as np",
         "import pandas as pd",
-        "import matplotlib",
-        "matplotlib.use(\"Agg\")",
         "import matplotlib.pyplot as plt",
         "from IPython.display import display, Audio, HTML",
         "import warnings",
@@ -95,36 +88,35 @@ def create_notebook():
         "from scipy.signal import butter, fftconvolve, sosfilt",
         "from tqdm.auto import tqdm",
         "",
-        "# التحقق من توفر GPU",
         "import torch",
         "if torch.cuda.is_available():",
-        "    print(f\"🚀 GPU متاح: {torch.cuda.get_device_name(0)}\")",
+        "    print(\"GPU:\", torch.cuda.get_device_name(0))",
         "else:",
-        "    print(\"⚠️ لا يوجد GPU – سيتم استخدام المعالج (CPU). التقييم سيكون أبطأ.\")",
-        "",
-        "print(\"✅ تم تثبيت وتحميل كل المكتبات بنجاح!\")"
+        "    print(\"No GPU found, running on CPU (slow)\")",
+        "print(\"Setup done\")"
     ])
 
-    # 3. Complete Tools (Inline Engine)
+    # ------------------ Cell 2: Core Engine Code ------------------
     add_cell("code", [
         "# ═══════════════════════════════════════════════════════════════",
-        "# 📦 تعريف أدوات التقييم والمؤثرات الصوتية (مدمجة بالكامل)",
+        "# 📦 Core Evaluation Engine & Audio Perturbations",
         "# ═══════════════════════════════════════════════════════════════",
         "",
         "SR = 16000",
         "",
         "# ────── Arabic Normalization ──────",
-        "",
         '_DIACRITICS = re.compile(r"[\\u0610-\\u061A\\u064B-\\u065F\\u0670\\u06D6-\\u06ED]")',
         '_TATWEEL = "\\u0640"',
         '_ALEF_FORMS = re.compile("[إأآٱ]")',
         '_NON_WORD = re.compile(r"[^\\w\\s]")',
         '_SPACES = re.compile(r"\\s+")',
         '_DIGITS = str.maketrans("٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹", "01234567890123456789")',
+        '_TAGS = re.compile(r"<[^>]*>|\[[^\]]*\]|\([^\)]*\)")',
         "",
         "@dataclass(frozen=True)",
         "class NormConfig:",
         "    remove_diacritics: bool = True",
+        "    remove_tags: bool = True",
         "    unify_alef: bool = True",
         "    unify_ya: bool = True",
         "    unify_ta_marbuta: bool = True",
@@ -134,8 +126,11 @@ def create_notebook():
         "    def describe(self):",
         "        return asdict(self)",
         "",
+        "# normalize Arabic text",
         "def normalize_arabic(text, cfg=NormConfig()):",
         '    text = str(text or "").strip()',
+        "    if cfg.remove_tags:",
+        '        text = _TAGS.sub(" ", text)',
         "    if cfg.remove_diacritics:",
         '        text = _DIACRITICS.sub("", text)',
         '    text = text.replace(_TATWEEL, "")',
@@ -154,8 +149,7 @@ def create_notebook():
         '    text = _NON_WORD.sub(" ", text)',
         '    return _SPACES.sub(" ", text).strip()',
         "",
-        "# ────── Metrics ──────",
-        "",
+        "# per-utterance error counts",
         "def utterance_stats(ref, hyp):",
         "    w = jiwer.process_words(ref, hyp)",
         "    c = jiwer.process_characters(ref, hyp)",
@@ -176,6 +170,7 @@ def create_notebook():
         'def corpus_rate(df, unit="w"):',
         '    return float(df[f"{unit}_err"].sum() / df[f"{unit}_ref_len"].sum())',
         "",
+        "# bootstrap confidence interval",
         'def bootstrap_ci(df, unit="w", n_boot=1000, seed=42, alpha=0.05):',
         '    err, length = df[f"{unit}_err"].to_numpy(), df[f"{unit}_ref_len"].to_numpy()',
         "    idx = np.random.default_rng(seed).integers(0, len(df), size=(n_boot, len(df)))",
@@ -190,6 +185,7 @@ def create_notebook():
         '            "cer": corpus_rate(df, "c"), "sub_rate": df.w_sub.sum() / ref_words,',
         '            "del_rate": df.w_del.sum() / ref_words, "ins_rate": df.w_ins.sum() / ref_words}',
         "",
+        "# most frequent word errors",
         "def top_confusions(refs, hyps, k=25):",
         "    counts = Counter()",
         "    for ref, hyp in zip(refs, hyps):",
@@ -207,14 +203,13 @@ def create_notebook():
         '    rows = [{"type": t, "reference": a, "prediction": b, "count": n} for (t, a, b), n in counts.most_common(k)]',
         '    return pd.DataFrame(rows, columns=["type", "reference", "prediction", "count"])',
         "",
-        "# ────── Audio Features ──────",
-        "",
         "def _dbfs(value):",
         "    return float(20 * np.log10(max(float(value), 1e-12)))",
         "",
         "def _rms(y):",
         "    return float(np.sqrt(np.mean(np.square(y, dtype=np.float64)) + 1e-12))",
         "",
+        "# basic audio stats",
         "def audio_features(y, sr=SR):",
         "    y = np.asarray(y, dtype=np.float32)",
         "    if y.size == 0:",
@@ -229,8 +224,6 @@ def create_notebook():
         '            "clipping_ratio": float(np.mean(np.abs(y) >= 0.999)),',
         '            "silence_ratio": float(np.mean(frame_rms < max(1e-4, rms * 0.03))),',
         '            "noise_floor_dbfs_proxy": _dbfs(np.median(quiet))}',
-        "",
-        "# ────── Failure Flags ──────",
         "",
         '_ARABIC_LETTER = re.compile(r"[\\u0621-\\u064A]")',
         '_ANY_LETTER = re.compile(r"[^\\W\\d_]")',
@@ -250,14 +243,13 @@ def create_notebook():
         "    if not letters: return 0.0",
         "    return 1 - len(_ARABIC_LETTER.findall(text)) / len(letters)",
         "",
+        "# flag empty, long, repeated, foreign output",
         "def failure_flags(ref, hyp, length_ratio_max=2.0, repeat_min=3, foreign_max=0.3):",
         "    ref_len, hyp_words = len(ref.split()), hyp.split()",
         '    ratio = len(hyp_words) / ref_len if ref_len else float("inf")',
         '    return {"flag_empty": not hyp.strip(), "flag_too_long": ratio > length_ratio_max,',
         '            "flag_repetition": max_repeat(hyp_words) >= repeat_min and max_repeat(ref.split()) < repeat_min,',
         '            "flag_foreign_script": non_arabic_ratio(hyp) > foreign_max and non_arabic_ratio(ref) <= foreign_max}',
-        "",
-        "# ────── Audio Perturbations (Noise & Distortions) ──────",
         "",
         "def _limit_peak(y):",
         "    peak = float(np.max(np.abs(y))) if y.size else 0.0",
@@ -267,11 +259,11 @@ def create_notebook():
         "    scale = _rms(y) / (10 ** (snr_db / 20)) / _rms(noise)",
         "    return _limit_peak(y + noise * scale)",
         "",
+        "# audio perturbations",
         "def white_noise(snr_db):",
         "    return lambda y, rng: _add_noise_at_snr(y, rng.normal(size=y.shape).astype(np.float32), snr_db)",
         "",
         "def real_noise(bank, snr_db):",
-        '    """Mix a random crop of a real noise recording at the target SNR."""',
         "    def apply(y, rng):",
         "        noise = bank[int(rng.integers(len(bank)))]",
         "        if len(noise) < len(y):",
@@ -280,8 +272,8 @@ def create_notebook():
         "        return _add_noise_at_snr(y, noise[start:start + len(y)], snr_db)",
         "    return apply",
         "",
+        "# 300-3400 Hz band, 8 kHz, mu-law",
         "def telephone():",
-        '    """Narrowband telephony: 300-3400 Hz band, 8 kHz, mu-law quantization."""',
         '    sos = butter(4, [300, 3400], btype="bandpass", fs=SR, output="sos")',
         "    mu = 255.0",
         "    def apply(y, rng):",
@@ -300,8 +292,8 @@ def create_notebook():
         "def gain(db):",
         "    return lambda y, rng: _limit_peak(y * 10 ** (db / 20))",
         "",
+        "# synthetic room reverb",
         "def reverb(rt60=0.5):",
-        '    """Synthetic room: exponentially decaying noise impulse response."""',
         "    def apply(y, rng):",
         "        n = int(SR * rt60)",
         "        t = np.arange(n) / SR",
@@ -312,7 +304,6 @@ def create_notebook():
         "    return apply",
         "",
         "def build_conditions(noise_bank=()):",
-        '    """Build dictionary of condition_name -> perturbation function."""',
         "    conditions = {",
         '        "clean": None,',
         '        "white_20dB": white_noise(20),',
@@ -329,12 +320,11 @@ def create_notebook():
         '            conditions[f"real_noise_{snr}dB"] = real_noise(noise_bank, snr)',
         "    return conditions",
         "",
-        "# ────── Dataset Loader ──────",
-        "",
         '_AUDIO_COLUMNS = {"audio", "audio_path", "path", "file", "wav_path", "file_name", "filename", "audio_file", "wav"}',
         '_TEXT_COLUMNS = {"transcription", "reference", "text", "ref", "sentence", "ground_truth", "label", "transcript"}',
         '_ID_COLUMNS = {"id", "uid", "utterance_id", "sample_id", "file_id", "name"}',
         '_GENDER_COLUMNS = {"gender", "sex", "speaker_gender"}',
+        '_DIALECT_COLUMNS = {"dialect", "accent", "language"}',
         '_AUDIO_EXTS = {".wav", ".flac", ".mp3", ".ogg", ".m4a", ".webm", ".opus"}',
         "",
         "def _find_column(columns, candidates, fallback=None):",
@@ -386,6 +376,7 @@ def create_notebook():
         "    text_col = _find_column(columns, _TEXT_COLUMNS)",
         "    id_col = _find_column(columns, _ID_COLUMNS)",
         "    gender_col = _find_column(columns, _GENDER_COLUMNS)",
+        "    dialect_col = _find_column(columns, _DIALECT_COLUMNS)",
         "    if text_col is None:",
         '        raise ValueError(f"Cannot find a transcription column in {meta_path}. Available: {columns}")',
         "    if audio_col is None:",
@@ -394,7 +385,8 @@ def create_notebook():
         "    for row in rows:",
         '        items.append({"audio_path": str(row[audio_col]), "reference_raw": str(row[text_col] or ""),',
         '                      "id": str(row.get(id_col, "")) if id_col else "",',
-        '                      "gender": str(row.get(gender_col, "unknown")) if gender_col else "unknown"})',
+        '                      "gender": str(row.get(gender_col, "unknown")) if gender_col else "unknown",',
+        '                      "dialect": str(row.get(dialect_col, "unknown")) if dialect_col else "unknown"})',
         "    return _finalise(items, audio_dir, max_samples, seed)",
         "",
         "def _load_from_zip(zip_path, max_samples, seed):",
@@ -434,9 +426,11 @@ def create_notebook():
         '            raise FileNotFoundError(f"Cannot find audio for item {i}: {item}")',
         '        result.append({"row_index": i, "id": item.get("id", str(i)),',
         '                       "gender": item.get("gender", "unknown"),',
+        '                       "dialect": item.get("dialect", "unknown"),',
         '                       "reference_raw": item.get("reference_raw", ""), "audio": y})',
         "    return result",
         "",
+        "# load ZIP, folder, or metadata file",
         "def load_custom_data(data_path, audio_dir=None, max_samples=None, seed=42):",
         "    data_path = Path(data_path)",
         '    if data_path.suffix.lower() == ".zip":',
@@ -450,11 +444,11 @@ def create_notebook():
         "        return _load_from_metadata(data_path, audio_dir or data_path.parent, max_samples, seed)",
         '    raise ValueError(f"Unsupported data_path: {data_path}")',
         "",
-        "# ────── ASR Pipeline & Robustness Loop ──────",
-        "",
+        "# HF ASR pipeline with FP16 support",
         "def build_asr(model_id, device):",
         "    from transformers import pipeline",
-        '    return pipeline("automatic-speech-recognition", model=model_id, device=device, chunk_length_s=30)',
+        '    return pipeline("automatic-speech-recognition", model=model_id, device=device, chunk_length_s=30,',
+        '                    torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32)',
         "",
         "def transcribe(asr, arrays, batch_size, language):",
         '    kwargs = {"task": "transcribe", **(({"language": language} if language else {}))}',
@@ -462,7 +456,6 @@ def create_notebook():
         '    return [o["text"].strip() for o in outputs]',
         "",
         "def evaluate_condition(items, transcribe_fn, perturb, rng, norm_cfg, batch_size):",
-        '    """Evaluate model under a single perturbation condition."""',
         "    hyps_raw, audio_seconds, elapsed = [], 0.0, 0.0",
         "    for start in range(0, len(items), batch_size):",
         "        batch = items[start:start + batch_size]",
@@ -475,15 +468,15 @@ def create_notebook():
         "    hyps = [normalize_arabic(h, norm_cfg) for h in hyps_raw]",
         "    scored = score_utterances(refs, hyps)",
         "    keep = [i for i, r in enumerate(refs) if r]",
-        '    meta = pd.DataFrame([{k: items[i][k] for k in ("row_index", "id", "gender", "reference_raw")} for i in keep])',
+        '    meta = pd.DataFrame([{k: items[i].get(k, "unknown") for k in ("row_index", "id", "gender", "dialect", "reference_raw")} for i in keep])',
         '    feats = pd.DataFrame([audio_features(items[i]["audio"]) for i in keep])',
         "    flag_df = pd.DataFrame([failure_flags(refs[i], hyps[i]) for i in keep])",
         "    df = pd.concat([meta, feats, scored.reset_index(drop=True), flag_df], axis=1)",
         '    df["prediction_raw"] = [hyps_raw[i] for i in keep]',
         "    return df, elapsed / audio_seconds",
         "",
+        "# evaluate all noise conditions",
         "def run_conditions(items, transcribe_fn, conditions, norm_cfg, batch_size, seed, n_boot):",
-        '    """Evaluate every condition; returns (summary_df, {condition: per-utterance df})."""',
         "    summaries, details = [], {}",
         '    for name in tqdm(list(conditions), desc="Evaluating conditions"):',
         "        rng = np.random.default_rng(seed)",
@@ -499,8 +492,6 @@ def create_notebook():
         "    if len(base):",
         '        summary["wer_delta_vs_clean"] = summary["wer"] - float(base.iloc[0])',
         "    return summary, details",
-        "",
-        "# ────── Evaluator Container ──────",
         "",
         "class EvalResult:",
         "    def __init__(self, summary, utterances, model_name, n_items):",
@@ -527,8 +518,9 @@ def create_notebook():
         "    def __repr__(self):",
         '        return f"EvalResult(model={self.model_name!r}, n={self.n_items}, WER={self.wer:.2%}, CER={self.cer:.2%})"',
         "",
+        "# clean evaluation",
         'def evaluate_model(items, model="openai/whisper-small", language="arabic",',
-        "                   batch_size=8, device=None, norm_cfg=NormConfig(), n_boot=1000, seed=42):",
+        "                   batch_size=16, device=None, norm_cfg=NormConfig(), n_boot=1000, seed=42):",
         "    if callable(model):",
         "        transcribe_fn = model",
         '        model_name = getattr(model, "__name__", "custom_model")',
@@ -551,7 +543,7 @@ def create_notebook():
         "    hyps = [normalize_arabic(h, norm_cfg) for h in hyps_raw]",
         "    scored = score_utterances(refs, hyps)",
         "    keep = [i for i, r in enumerate(refs) if r]",
-        '    meta = pd.DataFrame([{k: items[i][k] for k in ("row_index", "id", "gender", "reference_raw")} for i in keep])',
+        '    meta = pd.DataFrame([{k: items[i].get(k, "unknown") for k in ("row_index", "id", "gender", "dialect", "reference_raw")} for i in keep])',
         '    feats = pd.DataFrame([audio_features(items[i]["audio"]) for i in keep])',
         "    flag_df = pd.DataFrame([failure_flags(refs[i], hyps[i]) for i in keep])",
         "    df = pd.concat([meta, feats, scored.reset_index(drop=True), flag_df], axis=1)",
@@ -559,153 +551,117 @@ def create_notebook():
         '    summary_dict = {**summarize(df, n_boot, seed), "rtf": rtf}',
         "    return EvalResult(summary=summary_dict, utterances=df, model_name=model_name, n_items=len(items))",
         "",
-        'print("✅ تم تحميل جميع أدوات التقييم والمؤثرات بنجاح!")'
+        "# WER/CER per dialect",
+        "def dialect_summary(df):",
+        '    g = df.groupby("dialect")',
+        '    out = pd.DataFrame({"n": g.size(),',
+        '                        "wer": g.w_err.sum() / g.w_ref_len.sum(),',
+        '                        "cer": g.c_err.sum() / g.c_ref_len.sum()})',
+        '    return out.sort_values("wer").reset_index()',
+        "",
+        'print("Tools loaded")'
     ])
 
-    # 4. Model Selection Markdown
+    # ------------------ Cell 3: Configuration Markdown ------------------
     add_cell("markdown", [
         "---",
-        "## 1️⃣ اختيار الموديل",
-        "",
-        "حدد الموديل الذي تريد اختباره. يمكنك استخدام:",
-        "- **موديل من HuggingFace**: مثل `openai/whisper-small` أو `openai/whisper-large-v3-turbo`",
-        "- **موديل محلي**: مسار مجلد على Google Drive أو الجهاز يحتوي على الأوزان والإعدادات",
-        "- **موديل مخصص (Custom)**: دالة بايثون خاصة بك (انظر الخلية التالية)"
+        "## 1️⃣ Model & Dataset Configuration"
     ])
 
-    # 5. Model Selection Code
+    # ------------------ Cell 4: Config Code ------------------
     add_cell("code", [
-        "# ═══════════════════════════════════════════════════════════════",
-        "# 🔧 اختر الموديل هنا:",
-        "# ═══════════════════════════════════════════════════════════════",
-        "",
-        "# الخيار 1: موديل من HuggingFace (غيّر الاسم حسب حاجتك)",
-        'MODEL = "openai/whisper-small"',
-        "",
-        "# الخيار 2: موديل محلي محفوظ على Google Drive أو مجلد محلي",
-        '# MODEL = "/content/drive/MyDrive/my_model"',
-        "",
-        "# اللغة (arabic للعربية)",
+        'MODEL = "openai/whisper-large-v3-turbo"',
         'LANGUAGE = "arabic"',
+        "BATCH_SIZE = 16",
         "",
-        "# حجم الباتش (قلّله لو الذاكرة مش كافية)",
-        "BATCH_SIZE = 8",
+        '# Options: "hf", "upload_zip", "upload_files", "local", "fleurs"',
+        'DATA_SOURCE = "hf"',
         "",
-        'print(f"📌 الموديل المحدد: {MODEL}")',
-        'print(f"📌 اللغة: {LANGUAGE}")',
-        'print(f"📌 حجم الباتش: {BATCH_SIZE}")'
-    ])
-
-    # 6. Custom Model Markdown
-    add_cell("markdown", [
-        "### 🧪 (اختياري) استخدام موديل محلي الصنع بالكامل",
+        "# 0 = all samples",
+        "MAX_SAMPLES = 100",
         "",
-        "لو عندك موديل مبني بكود خاص (PyTorch, ONNX, Faster-Whisper، أو أي framework آخر)،",
-        "عرّف دالة `my_custom_transcribe` في الخلية التالية وفعّلها."
-    ])
-
-    # 7. Custom Model Code
-    add_cell("code", [
-        "# ═══════════════════════════════════════════════════════════════",
-        "# 🧪 (اختياري) عرّف دالة الموديل المخصص هنا:",
-        "# ═══════════════════════════════════════════════════════════════",
-        "# أزل التعليق (#) عن الكود التالي واكتب كود الموديل الخاص بك:",
+        "# audio column name in the HF dataset",
+        'AUDIO_COL = "audio"',
         "",
-        "# import your_custom_library",
-        "#",
-        "# def my_custom_transcribe(audio_arrays):",
-        '#     """',
-        "#     دالة التعرف على الصوت الخاصة بك.",
-        "#     المدخل: قائمة من مصفوفات numpy (16kHz, mono, float32)",
-        "#     المخرج: قائمة من النصوص المتوقعة",
-        '#     """',
-        "#     results = []",
-        "#     for audio in audio_arrays:",
-        "#         text = your_model.predict(audio, sampling_rate=16000)",
-        "#         results.append(text)",
-        "#     return results",
-        "#",
-        "# # لتفعيل الموديل المخصص:",
-        "# MODEL = my_custom_transcribe",
-        '# print("✅ تم تفعيل الموديل المخصص")'
-    ])
-
-    # 8. Data Loading Markdown
-    add_cell("markdown", [
-        "---",
-        "## 2️⃣ تحميل البيانات",
+        "# shuffle stream so dialects are mixed",
+        "SHUFFLE = True",
         "",
-        "| الطريقة | الوصف |",
-        "|---|---|",
-        "| **📤 رفع ملف ZIP من Colab** | رفع ملف ZIP يحتوي على الصوتيات وملف الـ CSV/JSON مباشرة |",
-        "| **📤 رفع ملفات منفصلة** | رفع ملف CSV وملفات الصوت منفصلة |",
-        "| **📁 مسار محلي / Google Drive** | تحديد مسار مجلد أو ملف CSV على Drive |",
-        "| **🌐 بيانات FLEURS** | استخدام بيانات FLEURS المصرية الجاهزة للاختبار السريع |",
-        "",
-        "**أعمدة CSV المدعومة تلقائياً:**",
-        "- الصوت: `audio`, `audio_path`, `path`, `file`, `wav_path`, `file_name`",
-        "- النص: `transcription`, `reference`, `text`, `sentence`, `ground_truth`"
-    ])
-
-    # 9. Data Source Selection Code
-    add_cell("code", [
-        "# ═══════════════════════════════════════════════════════════════",
-        "# 📂 اختر طريقة تحميل البيانات:",
-        "# ═══════════════════════════════════════════════════════════════",
-        "",
-        "# الخيار 1: رفع ملف ZIP من جهازك عبر Colab",
-        'DATA_SOURCE = "upload_zip"',
-        "",
-        "# الخيار 2: رفع ملفات صوت + CSV منفصلة (أزل التعليق)",
-        '# DATA_SOURCE = "upload_files"',
-        "",
-        "# الخيار 3: مسار على Google Drive أو مسار محلي (أزل التعليق)",
-        '# DATA_SOURCE = "local"',
+        "# only for DATA_SOURCE = \"local\"",
         '# DATA_PATH = "/content/drive/MyDrive/my_data/metadata.csv"',
         '# AUDIO_DIR = "/content/drive/MyDrive/my_data/wavs"',
         "",
-        "# الخيار 4: بيانات FLEURS الجاهزة للاختبار السريع (أزل التعليق)",
-        '# DATA_SOURCE = "fleurs"',
+        'print("Model:", MODEL)',
+        'print("Language:", LANGUAGE)',
+        'print("Batch size:", BATCH_SIZE)',
+        'print("Data source:", DATA_SOURCE)',
+        'print("Max samples:", MAX_SAMPLES if MAX_SAMPLES else "all")',
         "",
-        "# الحد الأقصى لعدد العينات (0 = كل العينات)",
-        "MAX_SAMPLES = 100",
+        "# optional: custom model, uncomment and edit",
+        "# def my_custom_transcribe(audio_arrays):",
+        "#     # input: list of 16 kHz mono float32 arrays, output: list of strings",
+        "#     return [your_model.predict(a, sampling_rate=16000) for a in audio_arrays]",
+        "#",
+        "# MODEL = my_custom_transcribe",
         "",
-        'print(f"📌 طريقة التحميل: {DATA_SOURCE}")',
-        'print(f"📌 الحد الأقصى للعينات: {MAX_SAMPLES if MAX_SAMPLES else \'الكل\'}")'
+        "# optional: mount Google Drive",
+        "# from google.colab import drive",
+        '# drive.mount("/content/drive")'
     ])
 
-    # 10. Load Data Code
+    # ------------------ Cell 5: Load Data Markdown ------------------
+    add_cell("markdown", [
+        "---",
+        "## 2️⃣ Data Loading & Dialectal Streaming"
+    ])
+
+    # ------------------ Cell 6: Load Data Code ------------------
     add_cell("code", [
-        "# ═══════════════════════════════════════════════════════════════",
-        "# 📥 تحميل البيانات",
-        "# ═══════════════════════════════════════════════════════════════",
+        'if DATA_SOURCE == "hf":',
+        "    from datasets import Audio as DsAudio, load_dataset",
         "",
-        'if DATA_SOURCE == "upload_zip":',
+        '    ds = load_dataset("oddadmix/dialectal-arabic-lahgtna-v2", split="train", streaming=True)',
+        "",
+        "    sample = next(iter(ds))",
+        '    print(sample["language"], "-", sample["transcript_text"])',
+        "",
+        "    if SHUFFLE:",
+        "        ds = ds.shuffle(seed=42, buffer_size=1000)",
+        "    ds = ds.cast_column(AUDIO_COL, DsAudio(sampling_rate=SR))",
+        "",
+        "    limit = MAX_SAMPLES or None",
+        "    items = []",
+        '    for i, row in enumerate(tqdm(islice(ds, limit), total=limit, desc="Streaming")):',
+        '        y = np.asarray(row[AUDIO_COL]["array"], dtype=np.float32)',
+        "        if y.ndim == 2: y = y.mean(axis=0 if y.shape[0] <= 8 else 1)",
+        '        items.append({"row_index": i, "id": str(i), "gender": "unknown", "dialect": row["language"],',
+        '                      "reference_raw": row["transcript_text"], "audio": y})',
+        '    print(f"Loaded {len(items)} samples from HF dataset")',
+        "",
+        'elif DATA_SOURCE == "upload_zip":',
         "    from google.colab import files",
-        '    print("📤 ارفع ملف ZIP يحتوي على الصوتيات وملف CSV/JSON:")',
         "    uploaded = files.upload()",
         "    zip_name = list(uploaded.keys())[0]",
         "    items = load_custom_data(zip_name, max_samples=MAX_SAMPLES or None, seed=42)",
-        '    print(f"\\n✅ تم تحميل {len(items)} عينة من {zip_name}")',
+        '    print(f"Loaded {len(items)} samples from {zip_name}")',
         "",
         'elif DATA_SOURCE == "upload_files":',
         "    from google.colab import files",
-        '    print("📤 ارفع ملف CSV أو JSON (ملف الـ metadata):")',
+        '    print("Upload metadata file (CSV/JSON):")',
         "    uploaded_meta = files.upload()",
         "    meta_name = list(uploaded_meta.keys())[0]",
-        '    print("\\n📤 الآن ارفع ملفات الصوت:")',
+        '    print("Upload audio files:")',
         "    uploaded_audio = files.upload()",
         '    audio_tmp = Path("uploaded_audio")',
         "    audio_tmp.mkdir(exist_ok=True)",
         "    for fname, content in uploaded_audio.items():",
         "        (audio_tmp / fname).write_bytes(content)",
         "    items = load_custom_data(meta_name, audio_dir=str(audio_tmp), max_samples=MAX_SAMPLES or None, seed=42)",
-        '    print(f"\\n✅ تم تحميل {len(items)} عينة")',
+        '    print(f"Loaded {len(items)} samples")',
         "",
         'elif DATA_SOURCE == "local":',
-        "    items = load_custom_data(DATA_PATH, audio_dir=AUDIO_DIR if 'AUDIO_DIR' in dir() else None,",
+        '    items = load_custom_data(DATA_PATH, audio_dir=AUDIO_DIR if "AUDIO_DIR" in dir() else None,',
         "                             max_samples=MAX_SAMPLES or None, seed=42)",
-        '    print(f"✅ تم تحميل البيانات: {len(items)} عينة")',
+        '    print(f"Loaded {len(items)} samples")',
         "",
         'elif DATA_SOURCE == "fleurs":',
         "    from datasets import Audio as DsAudio, load_dataset",
@@ -719,117 +675,89 @@ def create_notebook():
         '        y = np.asarray(row["audio"]["array"], dtype=np.float32)',
         "        if y.ndim == 2: y = y.mean(axis=0 if y.shape[0] <= 8 else 1)",
         '        gender = gender_names[row["gender"]] if gender_names else row["gender"]',
-        '        items.append({"row_index": i, "id": row["id"], "gender": gender,',
+        '        items.append({"row_index": i, "id": row["id"], "gender": gender, "dialect": "ar_eg",',
         '                      "reference_raw": row["transcription"], "audio": y})',
-        '    print(f"✅ تم تحميل بيانات FLEURS المصرية: {len(items)} عينة")',
+        '    print(f"Loaded {len(items)} FLEURS samples")',
         "",
         "else:",
-        '    raise ValueError(f"طريقة تحميل غير معروفة: {DATA_SOURCE}")',
+        '    raise ValueError(f"Unknown DATA_SOURCE: {DATA_SOURCE}")',
         "",
-        "# عرض أول 5 عينات للمعاينة",
-        'preview = pd.DataFrame([{"id": it["id"], "gender": it.get("gender", "unknown"),',
-        '                         "reference": it["reference_raw"][:80] + "..." if len(it["reference_raw"]) > 80 else it["reference_raw"],',
-        '                         "duration_sec": round(len(it["audio"]) / SR, 2)}',
-        "                        for it in items[:5]])",
-        'print("\\n📋 أول 5 عينات:")',
+        'preview = pd.DataFrame([{"id": it["id"], "dialect": it.get("dialect", "unknown"),',
+        '                         "reference": it["reference_raw"][:80],',
+        '                         "duration_sec": round(len(it["audio"]) / SR, 2)} for it in items[:5]])',
+        'print("First 5 samples:")',
         "display(preview)"
     ])
 
-    # 11. Google Drive Markdown
+    # ------------------ Cell 7: Clean Evaluation Markdown ------------------
     add_cell("markdown", [
         "---",
-        "## 3️⃣ (اختياري) ربط Google Drive",
-        "",
-        "لو بياناتك أو الموديل محفوظين على Google Drive، شغّل الخلية التالية لربط حسابك."
+        "## 3️⃣ Baseline Evaluation (Clean Audio)"
     ])
 
-    # 12. Google Drive Code
+    # ------------------ Cell 8: Clean Evaluation Code ------------------
     add_cell("code", [
-        "# ═══════════════════════════════════════════════════════════════",
-        "# 📁 (اختياري) ربط Google Drive",
-        "# ═══════════════════════════════════════════════════════════════",
-        "# أزل التعليق وشغّل الخلية لو محتاج Drive",
+        "import gc",
+        "import torch",
         "",
-        "# from google.colab import drive",
-        "# drive.mount('/content/drive')",
-        '# print("✅ تم ربط Google Drive بنجاح")',
-        '# print("📁 الملفات متاحة في: /content/drive/MyDrive/")'
+        "# Force garbage collection and empty PyTorch's cache to free up GPU memory",
+        "gc.collect()",
+        "torch.cuda.empty_cache()",
+        "",
+        "with torch.no_grad():",
+        "    result = evaluate_model(",
+        "        items=items,",
+        "        model=MODEL,",
+        "        language=LANGUAGE,",
+        "        batch_size=BATCH_SIZE,",
+        "        norm_cfg=NormConfig(),",
+        "        n_boot=1000,",
+        "        seed=42,",
+        "    )",
+        "",
+        'print("=" * 60)',
+        'print("Results for model:", result.model_name)',
+        'print("=" * 60)',
+        'print(f"  Samples scored:  {result.summary[\'n_scored\']}")',
+        'print(f"  WER:             {result.wer:.2%}")',
+        'print(f"  CER:             {result.cer:.2%}")',
+        'print(f"  RTF:             {result.rtf:.3f}")',
+        'print(f"  Substitutions:   {result.summary[\'sub_rate\']:.2%}")',
+        'print(f"  Deletions:       {result.summary[\'del_rate\']:.2%}")',
+        'print(f"  Insertions:      {result.summary[\'ins_rate\']:.2%}")',
+        'print(f"  WER 95% CI:      [{result.summary[\'wer_ci_low\']:.2%}, {result.summary[\'wer_ci_high\']:.2%}]")',
+        'print("=" * 60)'
     ])
 
-    # 13. Run Clean Evaluation Markdown
+    # ------------------ Cell 9: Visualizations ------------------
     add_cell("markdown", [
         "---",
-        "## 4️⃣ تشغيل التقييم الأساسي (Clean Evaluation)",
-        "",
-        "الخلية التالية ستشغّل الموديل على الصوت الأصلي النظيف وتحسب كافة المقاييس (WER, CER, RTF, ونسب الأخطاء)."
+        "## 4️⃣ Results Dashboard & Error Distributions"
     ])
 
-    # 14. Run Clean Evaluation Code
     add_cell("code", [
-        "# ═══════════════════════════════════════════════════════════════",
-        "# 🚀 تشغيل التقييم على الصوت الأصلي",
-        "# ═══════════════════════════════════════════════════════════════",
-        "",
-        "result = evaluate_model(",
-        "    items=items,",
-        "    model=MODEL,",
-        "    language=LANGUAGE,",
-        "    batch_size=BATCH_SIZE,",
-        "    norm_cfg=NormConfig(),",
-        "    n_boot=1000,",
-        "    seed=42,",
-        ")",
-        "",
-        'print(f"\\n{\'=\'*60}")',
-        'print(f"📊 نتائج التقييم للموديل: {result.model_name}")',
-        'print(f"{\'=\'*60}")',
-        'print(f"  عدد العينات المقيّمة: {result.summary[\'n_scored\']}")',
-        'print(f"  WER (نسبة خطأ الكلمات):  {result.wer:.2%}")',
-        'print(f"  CER (نسبة خطأ الحروف):   {result.cer:.2%}")',
-        'print(f"  RTF (سرعة المعالجة):      {result.rtf:.3f}")',
-        'print(f"  نسبة الاستبدال (Sub):     {result.summary[\'sub_rate\']:.2%}")',
-        'print(f"  نسبة الحذف (Del):         {result.summary[\'del_rate\']:.2%}")',
-        'print(f"  نسبة الإضافة (Ins):       {result.summary[\'ins_rate\']:.2%}")',
-        'print(f"  WER CI 95%:                [{result.summary[\'wer_ci_low\']:.2%}, {result.summary[\'wer_ci_high\']:.2%}]")',
-        'print(f"{\'=\'*60}")'
-    ])
-
-    # 15. Dashboard Markdown
-    add_cell("markdown", [
-        "---",
-        "## 5️⃣ لوحة النتائج والرسوم البيانية"
-    ])
-
-    # 16. Dashboard Code
-    add_cell("code", [
-        "# ═══════════════════════════════════════════════════════════════",
-        "# 📊 لوحة الرسوم البيانية",
-        "# ═══════════════════════════════════════════════════════════════",
-        "",
         "fig, axes = plt.subplots(1, 3, figsize=(16, 5))",
         "",
-        "# 1. توزيع WER لكل جملة",
+        "# WER per utterance",
         'axes[0].hist(result.utterances["wer"], bins=30, color="#2196F3", edgecolor="white", alpha=0.85)',
         'axes[0].axvline(result.wer, color="red", linestyle="--", linewidth=2, label=f"Corpus WER = {result.wer:.2%}")',
         'axes[0].set_xlabel("WER per utterance")',
         'axes[0].set_ylabel("Count")',
-        'axes[0].set_title("توزيع WER لكل جملة")',
+        'axes[0].set_title("WER distribution")',
         "axes[0].legend()",
         "",
-        "# 2. WER مقابل مدة الصوت",
-        'axes[1].scatter(result.utterances["duration_sec"], result.utterances["wer"],',
-        '                alpha=0.5, s=20, color="#4CAF50")',
+        "# WER vs duration",
+        'axes[1].scatter(result.utterances["duration_sec"], result.utterances["wer"], alpha=0.5, s=20, color="#4CAF50")',
         'axes[1].set_xlabel("Duration (sec)")',
         'axes[1].set_ylabel("WER")',
-        'axes[1].set_title("WER مقابل مدة الصوت")',
+        'axes[1].set_title("WER vs duration")',
         "",
-        "# 3. نسب الأخطاء (S/D/I)",
+        "# error types",
         'error_types = ["Substitution", "Deletion", "Insertion"]',
         'error_values = [result.summary["sub_rate"], result.summary["del_rate"], result.summary["ins_rate"]]',
-        'colors = ["#FF9800", "#F44336", "#9C27B0"]',
-        'axes[2].bar(error_types, error_values, color=colors, edgecolor="white")',
+        'axes[2].bar(error_types, error_values, color=["#FF9800", "#F44336", "#9C27B0"], edgecolor="white")',
         'axes[2].set_ylabel("Rate")',
-        'axes[2].set_title("تفصيل نوع الأخطاء (S/D/I)")',
+        'axes[2].set_title("Error types")',
         "for i, v in enumerate(error_values):",
         '    axes[2].text(i, v + 0.005, f"{v:.2%}", ha="center", fontweight="bold")',
         "",
@@ -837,20 +765,34 @@ def create_notebook():
         "plt.show()"
     ])
 
-    # 17. Worst Utterances Markdown
+    # ------------------ Cell 10: Dialect Breakdown ------------------
     add_cell("markdown", [
         "---",
-        "## 6️⃣ تحليل الأخطاء ومشغّل الصوت",
-        "",
-        "هنا يتم عرض أسوأ الجمل أداءً (أعلى WER) مع مشغل صوت مدمج للاستماع ومقارنة النص الأصلي بما توقعه الموديل."
+        "## 5️⃣ Dialectal Breakdown (WER & CER by Dialect)"
     ])
 
-    # 18. Worst Utterances Code
     add_cell("code", [
-        "# ═══════════════════════════════════════════════════════════════",
-        "# 🔍 أسوأ 10 جمل (الأعلى WER) مع مشغل الصوت",
-        "# ═══════════════════════════════════════════════════════════════",
+        "dialect_df = dialect_summary(result.utterances)",
+        'print("WER/CER per dialect:")',
+        'display(dialect_df.style.format({"wer": "{:.2%}", "cer": "{:.2%}"}))',
         "",
+        "fig, ax = plt.subplots(figsize=(10, max(3, 0.4 * len(dialect_df))))",
+        'ax.barh(dialect_df["dialect"].astype(str), dialect_df["wer"], color="#2196F3", edgecolor="white")',
+        'ax.set_xlabel("WER")',
+        'ax.set_title("WER per dialect")',
+        'for i, (v, n) in enumerate(zip(dialect_df["wer"], dialect_df["n"])):',
+        '    ax.text(v + 0.005, i, f"{v:.1%} (n={n})", va="center", fontsize=8)',
+        "plt.tight_layout()",
+        "plt.show()"
+    ])
+
+    # ------------------ Cell 11: Worst Utterances with Audio Player ------------------
+    add_cell("markdown", [
+        "---",
+        "## 6️⃣ Error Inspection & Embedded Audio Player"
+    ])
+
+    add_cell("code", [
         "worst_n = 10",
         'worst_indices = result.utterances.nlargest(worst_n, "wer").index.tolist()',
         "",
@@ -859,120 +801,77 @@ def create_notebook():
         '    item_idx = int(row["row_index"])',
         '    item = items[item_idx] if item_idx < len(items) else None',
         "",
-        '    print(f"\\n{\'━\'*70}")',
-        '    print(f"🔴 الترتيب #{rank} | WER = {row[\'wer\']:.2%} | المدة = {row[\'duration_sec\']:.1f}s")',
-        '    print(f"📝 النص المرجعي:  {row[\'reference_raw\']}")',
-        '    print(f"🤖 نص الموديل:    {row[\'prediction_raw\']}")',
+        '    print("-" * 70)',
+        '    print(f"#{rank} | WER = {row[\'wer\']:.2%} | duration = {row[\'duration_sec\']:.1f}s | dialect = {row[\'dialect\']}")',
+        '    print("Reference:  ", row["reference_raw"])',
+        '    print("Prediction: ", row["prediction_raw"])',
         "",
         "    if item is not None:",
         '        display(Audio(data=item["audio"], rate=SR))'
     ])
 
-    # 19. Top Confusions Markdown
+    # ------------------ Cell 12: Top Confusions ------------------
     add_cell("markdown", [
         "---",
-        "## 7️⃣ أكثر الكلمات خطأ (Top Confusions)"
+        "## 7️⃣ Word Confusions Matrix"
     ])
 
-    # 20. Top Confusions Code
     add_cell("code", [
-        "# ═══════════════════════════════════════════════════════════════",
-        "# 🔄 أكثر الكلمات التي يخطئ فيها الموديل",
-        "# ═══════════════════════════════════════════════════════════════",
-        "",
         "confusions = result.confusions",
-        'print("📊 أكثر 25 خطأ تكراراً:")',
-        'print("  - sub = استبدال (الموديل سمع كلمة غلط)")',
-        'print("  - del = حذف (الموديل أسقط الكلمة)")',
-        'print("  - ins = إضافة (الموديل ألّف كلمة من عنده)")',
-        "print()",
+        'print("Top 25 word errors (sub = substituted, del = dropped, ins = added):")',
         "display(confusions)"
     ])
 
-    # 21. Failure Flags Markdown
+    # ------------------ Cell 13: Failure Flags ------------------
     add_cell("markdown", [
         "---",
-        "## 8️⃣ مؤشرات الأعطال (Failure Flags)"
+        "## 8️⃣ Failure Flags (Hallucinations, Loops & Empty Outputs)"
     ])
 
-    # 22. Failure Flags Code
     add_cell("code", [
-        "# ═══════════════════════════════════════════════════════════════",
-        "# 🚩 ملخص مؤشرات الأعطال",
-        "# ═══════════════════════════════════════════════════════════════",
-        "",
         "flags = result.flag_summary()",
         "flag_labels = {",
-        '    "flag_empty": "🔇 ناتج فاضي (الموديل ما طلّع أي نص)",',
-        '    "flag_too_long": "📏 ناتج أطول بكتير من المرجع",',
-        '    "flag_repetition": "🔁 تكرار (الموديل بيعيد نفس الكلام)",',
-        '    "flag_foreign_script": "🌍 حروف غير عربية (غلط في تحديد اللغة)",',
+        '    "flag_empty": "Empty output",',
+        '    "flag_too_long": "Output much longer than reference",',
+        '    "flag_repetition": "Repetition",',
+        '    "flag_foreign_script": "Non-Arabic script",',
         "}",
         "",
-        'print("🚩 نسبة كل نوع عطل:")',
+        'print("Failure flag rates:")',
         'print("-" * 50)',
         "for key, rate in flags.items():",
         "    label = flag_labels.get(key, key)",
-        '    bar = "█" * int(rate * 50)',
+        '    bar = "#" * int(rate * 50)',
         '    print(f"  {label}: {rate:.1%}  {bar}")'
     ])
 
-    # 23. Robustness Section Markdown (THE NOISE TESTING SECTION!)
+    # ------------------ Cell 14: Robustness Testing ------------------
     add_cell("markdown", [
         "---",
-        "## 🔊 9️⃣ اختبار المتانة والضوضاء (Robustness & Noise Testing)",
-        "",
-        "هذا القسم يختبر قدرة الموديل على فهم الصوت تحت **مختلف أنواع الضوضاء والتشويش**:",
-        "",
-        "| نوع المؤثر / الظرف | الوصف والتأثير |",
-        "|---|---|",
-        "| **clean** | الصوت الأصلي النظيف بدون أي تعديل |",
-        "| **white_20dB** | ضوضاء بيضاء خفيفة (SNR = 20 dB) |",
-        "| **white_10dB** | ضوضاء بيضاء متوسطة (SNR = 10 dB) |",
-        "| **white_5dB** | ضوضاء بيضاء شديدة وصعبة (SNR = 5 dB) |",
-        "| **telephone** | محاكاة صوت التليفون الأرضي/المحمول (فلتر 300-3400 Hz و 8-bit quantization) |",
-        "| **speed_0.85** | صوت بطيء بنسبة 15% (كلام متأنٍ) |",
-        "| **speed_1.15** | صوت سريع بنسبة 15% (كلام سريع) |",
-        "| **low_volume_-25dB** | صوت منخفض جداً وضعيف (-25 dB) |",
-        "| **reverb_0.5s** | صدى غرفة واسعة (Room Reverberation مع RT60=0.5s) |",
-        "",
-        "> 💡 **ملاحظة**: يمكنك اختيار كل الظروف أو تحديد ظروف معينة في الخلية التالية لتوفير الوقت."
+        "## 9️⃣ Acoustic Robustness & Noise Stress-Testing"
     ])
 
-    # 24. Robustness Config Code
     add_cell("code", [
-        "# ═══════════════════════════════════════════════════════════════",
-        "# 🔧 اختيار ظروف الضوضاء والتشويش للاختبار",
-        "# ═══════════════════════════════════════════════════════════════",
-        "",
-        "# يمكنك إزالة أي سطر لو مش عايز تجربه لتسريع الفحص:",
+        "# remove lines to skip conditions",
         "SELECTED_CONDITIONS = {",
-        '    "clean": None,                    # الصوت الأصلي النظيف',
-        '    "white_20dB": white_noise(20),     # ضوضاء خفيفة',
-        '    "white_10dB": white_noise(10),     # ضوضاء متوسطة',
-        '    "white_5dB": white_noise(5),       # ضوضاء قوية',
-        '    "telephone": telephone(),          # جودة مكالمة هاتفية',
-        '    "speed_0.85": speed(0.85),         # كلام بطيء',
-        '    "speed_1.15": speed(1.15),         # كلام سريع',
-        '    "low_volume_-25dB": gain(-25),     # صوت منخفض جداً',
-        '    "reverb_0.5s": reverb(0.5),        # صدى غرفة',
+        '    "clean": None,',
+        '    "white_20dB": white_noise(20),',
+        '    "white_10dB": white_noise(10),',
+        '    "white_5dB": white_noise(5),',
+        '    "telephone": telephone(),',
+        '    "speed_0.85": speed(0.85),',
+        '    "speed_1.15": speed(1.15),',
+        '    "low_volume_-25dB": gain(-25),',
+        '    "reverb_0.5s": reverb(0.5),',
         "}",
         "",
-        'print(f"📌 عدد الظروف المحددة: {len(SELECTED_CONDITIONS)}")',
-        'print(f"📌 قائمة الظروف: {list(SELECTED_CONDITIONS.keys())}")'
-    ])
-
-    # 25. Run Robustness Code
-    add_cell("code", [
-        "# ═══════════════════════════════════════════════════════════════",
-        "# 🚀 تشغيل اختبار الضوضاء والمتانة (Robustness Evaluation)",
-        "# ═══════════════════════════════════════════════════════════════",
+        'print("Conditions:", list(SELECTED_CONDITIONS.keys()))',
         "",
         "if callable(MODEL):",
         "    _transcribe_fn = MODEL",
         "else:",
         "    _device = 0 if torch.cuda.is_available() else -1",
-        '    _asr = build_asr(MODEL, _device)',
+        "    _asr = build_asr(MODEL, _device)",
         "    _transcribe_fn = lambda arrays: transcribe(_asr, arrays, BATCH_SIZE, LANGUAGE)",
         "",
         "robustness_summary, robustness_details = run_conditions(",
@@ -985,9 +884,9 @@ def create_notebook():
         "    n_boot=1000,",
         ")",
         "",
-        'print("\\n" + "="*80)',
-        'print("📊 نتائج اختبار المتانة ضد النويز والتشويش (Robustness Summary)")',
-        'print("="*80)',
+        'print("=" * 80)',
+        'print("Robustness summary")',
+        'print("=" * 80)',
         'display_cols = ["condition", "wer", "cer", "rtf"]',
         'if "wer_delta_vs_clean" in robustness_summary.columns:',
         '    display_cols.append("wer_delta_vs_clean")',
@@ -1001,115 +900,86 @@ def create_notebook():
         "display(summary_display)"
     ])
 
-    # 26. Robustness Visualization Code
+    # ------------------ Cell 15: Robustness Visualizations ------------------
     add_cell("code", [
-        "# ═══════════════════════════════════════════════════════════════",
-        "# 📊 رسم بياني لمقارنة أداء الموديل تحت كل نوع نويز",
-        "# ═══════════════════════════════════════════════════════════════",
-        "",
         "fig, axes = plt.subplots(1, 2, figsize=(16, 6))",
         "",
         'conditions_list = robustness_summary["condition"].tolist()',
         'wer_values = robustness_summary["wer"].tolist()',
         'cer_values = robustness_summary["cer"].tolist()',
         "",
-        "# تلوين الأعمدة حسب نوع المؤثر",
         "bar_colors = []",
         "for c in conditions_list:",
-        '    if c == "clean": bar_colors.append("#4CAF50")      # أخضر (نظيف)',
-        '    elif "white" in c: bar_colors.append("#F44336")    # أحمر (ضوضاء)',
-        '    elif "telephone" in c: bar_colors.append("#FF9800")# برتقالي (هاتف)',
-        '    elif "speed" in c: bar_colors.append("#2196F3")    # أزرق (سرعة)',
-        '    elif "volume" in c: bar_colors.append("#9C27B0")   # بنفسجي (صوت منخفض)',
-        '    elif "reverb" in c: bar_colors.append("#00BCD4")   # سماوي (صدى)',
+        '    if c == "clean": bar_colors.append("#4CAF50")',
+        '    elif "white" in c: bar_colors.append("#F44336")',
+        '    elif "telephone" in c: bar_colors.append("#FF9800")',
+        '    elif "speed" in c: bar_colors.append("#2196F3")',
+        '    elif "volume" in c: bar_colors.append("#9C27B0")',
+        '    elif "reverb" in c: bar_colors.append("#00BCD4")',
         '    else: bar_colors.append("#607D8B")',
         "",
-        "# 1. WER",
-        'axes[0].bar(range(len(conditions_list)), wer_values, color=bar_colors, edgecolor="white")',
-        "axes[0].set_xticks(range(len(conditions_list)))",
-        'axes[0].set_xticklabels(conditions_list, rotation=45, ha="right", fontsize=9)',
-        'axes[0].set_ylabel("WER")',
-        'axes[0].set_title("مقارنة نسبة خطأ الكلمات (WER) تحت كل ظرف")',
-        "for i, v in enumerate(wer_values):",
-        '    axes[0].text(i, v + 0.005, f"{v:.1%}", ha="center", fontsize=8, fontweight="bold")',
-        "",
-        "# 2. CER",
-        'axes[1].bar(range(len(conditions_list)), cer_values, color=bar_colors, edgecolor="white")',
-        "axes[1].set_xticks(range(len(conditions_list)))",
-        'axes[1].set_xticklabels(conditions_list, rotation=45, ha="right", fontsize=9)',
-        'axes[1].set_ylabel("CER")',
-        'axes[1].set_title("مقارنة نسبة خطأ الحروف (CER) تحت كل ظرف")',
-        "for i, v in enumerate(cer_values):",
-        '    axes[1].text(i, v + 0.005, f"{v:.1%}", ha="center", fontsize=8, fontweight="bold")',
+        'for ax, vals, name in [(axes[0], wer_values, "WER"), (axes[1], cer_values, "CER")]:',
+        '    ax.bar(range(len(conditions_list)), vals, color=bar_colors, edgecolor="white")',
+        "    ax.set_xticks(range(len(conditions_list)))",
+        '    ax.set_xticklabels(conditions_list, rotation=45, ha="right", fontsize=9)',
+        "    ax.set_ylabel(name)",
+        '    ax.set_title(f"{name} per condition")',
+        "    for i, v in enumerate(vals):",
+        '        ax.text(i, v + 0.005, f"{v:.1%}", ha="center", fontsize=8, fontweight="bold")',
         "",
         "plt.tight_layout()",
         "plt.show()",
         "",
-        "# ملخص نصي",
         'if "wer_delta_vs_clean" in robustness_summary.columns:',
         '    worst_cond = robustness_summary.loc[robustness_summary["wer"].idxmax()]',
         '    best_cond = robustness_summary.loc[robustness_summary["wer"].idxmin()]',
         '    clean_wer = robustness_summary.loc[robustness_summary.condition == "clean", "wer"].iloc[0]',
-        '    print(f"\\n📈 أسوأ ظرف تأثيراً على الموديل: {worst_cond[\'condition\']} (WER = {worst_cond[\'wer\']:.2%})")',
-        '    print(f"📉 أفضل ظرف: {best_cond[\'condition\']} (WER = {best_cond[\'wer\']:.2%})")',
-        '    print(f"💡 الزيادة في نسبة الخطأ بسبب النويز: +{worst_cond[\'wer\'] - clean_wer:.2%}")'
+        '    print(f"Worst condition: {worst_cond[\'condition\']} (WER = {worst_cond[\'wer\']:.2%})")',
+        '    print(f"Best condition: {best_cond[\'condition\']} (WER = {best_cond[\'wer\']:.2%})")',
+        '    print(f"Max WER increase vs clean: +{worst_cond[\'wer\'] - clean_wer:.2%}")'
     ])
 
-    # 27. Audio Perturbation Player Code
+    # ------------------ Cell 16: Perturbed Audio Player ------------------
+    add_cell("markdown", [
+        "---",
+        "## 🔊 Listen to Acoustic Perturbations"
+    ])
+
     add_cell("code", [
-        "# ═══════════════════════════════════════════════════════════════",
-        "# 🎧 استمع للفرق: قارن الصوت الأصلي بالصوت بعد تطبيق النويز والتشويش",
-        "# ═══════════════════════════════════════════════════════════════",
-        "",
-        "# اختر رقم العينة للاستماع إليها (0 = أول عينة)",
         "SAMPLE_IDX = 0",
         "",
         "sample = items[SAMPLE_IDX]",
-        'print(f"📝 النص المرجعي: {sample[\'reference_raw\']}")',
-        'print("\\n🔊 1. الصوت الأصلي النظيف (clean):")',
+        'print("Reference:", sample["reference_raw"])',
+        'print("Clean audio:")',
         'display(Audio(data=sample["audio"], rate=SR))',
         "",
-        "# تشغيل عينات الصوت مع كل مؤثر",
         "for cond_name, perturb_fn in SELECTED_CONDITIONS.items():",
         '    if cond_name == "clean" or perturb_fn is None:',
         "        continue",
         '    perturbed = perturb_fn(sample["audio"].copy(), np.random.default_rng(42))',
-        '    print(f"\\n🔊 {cond_name}:")',
+        '    print(f"{cond_name}:")',
         '    display(Audio(data=perturbed, rate=SR))'
     ])
 
-    # 28. Save & Export Markdown
+    # ------------------ Cell 17: Save & Export ------------------
     add_cell("markdown", [
         "---",
-        "## 🔟 حفظ وتصدير النتائج والتنزيل"
+        "## 💾 Export & Download Deliverables"
     ])
 
-    # 29. Save & Export Code
     add_cell("code", [
-        "# ═══════════════════════════════════════════════════════════════",
-        "# 💾 حفظ وتنزيل كافة النتائج والتقارير",
-        "# ═══════════════════════════════════════════════════════════════",
-        "",
         'output_dir = Path("outputs") / result.model_name.split("/")[-1]',
         "output_dir.mkdir(parents=True, exist_ok=True)",
         "",
-        "# حفظ الجدول التفصيلي للعينات",
         'utterances_path = output_dir / "utterances.csv"',
-        'result.utterances.drop(columns=["ref", "hyp"], errors="ignore").to_csv(',
-        '    utterances_path, index=False, encoding="utf-8-sig")',
-        "",
-        "# حفظ أسوأ 30 جملة",
+        'result.utterances.drop(columns=["ref", "hyp"], errors="ignore").to_csv(utterances_path, index=False, encoding="utf-8-sig")',
         'result.worst.to_csv(output_dir / "worst_30.csv", index=False, encoding="utf-8-sig")',
-        "",
-        "# حفظ الكلمات الأكثر خطأ",
         'result.confusions.to_csv(output_dir / "top_confusions.csv", index=False, encoding="utf-8-sig")',
+        'dialect_summary(result.utterances).to_csv(output_dir / "dialect_wer.csv", index=False, encoding="utf-8-sig")',
         "",
-        "# حفظ تقرير المتانة والنويز لو تم تشغيله",
         'if "robustness_summary" in dir():',
         '    robustness_summary.to_csv(output_dir / "robustness_summary.csv", index=False, encoding="utf-8-sig")',
-        '    print("   📄 robustness_summary.csv")',
         "",
-        "# حفظ التقرير الكامل كـ JSON",
         "import platform",
         "report = {",
         '    "model": result.model_name,',
@@ -1123,52 +993,32 @@ def create_notebook():
         '    "ins_rate": result.summary["ins_rate"],',
         '    "wer_ci_95": [result.summary["wer_ci_low"], result.summary["wer_ci_high"]],',
         '    "flags": result.flag_summary(),',
+        '    "dialects": dialect_summary(result.utterances).to_dict("records"),',
         '    "python": platform.python_version(),',
         '    "device": "cuda" if torch.cuda.is_available() else "cpu",',
         "}",
         'if "robustness_summary" in dir():',
         '    report["robustness"] = robustness_summary[["condition", "wer", "cer", "rtf"]].to_dict("records")',
         "",
-        '(output_dir / "report.json").write_text(',
-        '    json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")',
+        '(output_dir / "report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")',
         "",
-        'print(f"\\n✅ تم حفظ النتائج في: {output_dir}")',
-        'print(f"   📄 {utterances_path.name}")',
-        'print(f"   📄 worst_30.csv")',
-        'print(f"   📄 top_confusions.csv")',
-        'print(f"   📄 report.json")',
+        'print("Saved results to:", output_dir)',
+        "for f in sorted(output_dir.iterdir()):",
+        '    print("  ", f.name)',
         "",
-        "# تنزيل الملفات تلقائياً في بيئة Colab",
         "try:",
         "    from google.colab import files",
-        '    print("\\n📥 جاري تنزيل ملفات النتائج لجهازك...")',
-        '    files.download(str(output_dir / "report.json"))',
-        '    files.download(str(utterances_path))',
-        '    files.download(str(output_dir / "worst_30.csv"))',
-        '    files.download(str(output_dir / "top_confusions.csv"))',
-        '    if "robustness_summary" in dir():',
-        '        files.download(str(output_dir / "robustness_summary.csv"))',
-        '    print("✅ تم بدء التنزيل بنجاح!")',
+        "    for f in sorted(output_dir.iterdir()):",
+        "        files.download(str(f))",
+        '    print("Download started")',
         "except ImportError:",
-        '    print("💡 في بيئة Colab سيتم تنزيل الملفات تلقائياً إلى مجلد التنزيلات بجهازك.")'
-    ])
-
-    # 30. Notes Markdown
-    add_cell("markdown", [
-        "---",
-        "## 🎓 ملاحظات وتوجيهات مهمة",
-        "",
-        "1. **معيار Normalization**: قواعد التطبيع (حذف التشكيل، توحيد الألف والياء والتاء المربوطة) تُطبّق بالتساوي على النص المرجعي وتوقع الموديل لحساب عادل للـ WER.",
-        "2. **اختبار المتانة والنويز**: يعطيك رؤية واقعية لكيفية تصرف الموديل في العالم الحقيقي (في الشارع، عبر الهاتف، في بيئات مزعجة).",
-        "3. **RTF (Real-Time Factor)**: قيمة أقل من 1.0 تعني أن الموديل أسرع من الزمن الحقيقي (مثلاً 0.2 تعني 10 ثواني صوت تُعالج في ثانيتين).",
-        "4. **مقارنة موديلين**: يمكنك تشغيل النوتبوك على موديلين مختلفين ومقارنة عمود `wer_delta_vs_clean` لمعرفة أيهما أكثر صموداً أمام الضوضاء.",
-        "5. **تفعيل الـ GPU في Colab**: تأكد من تفعيل `Runtime` ← `Change runtime type` ← `T4 GPU` لتسريع التقييم حتى 10-20 ضعفاً مقارنة بالـ CPU."
+        '    print("Not running in Colab, files are in", output_dir)'
     ])
 
     return nb
 
 if __name__ == "__main__":
-    notebook = create_notebook()
-    out_path = Path(r"c:\Users\youse\Dropbox\PC\Downloads\stt_eval_kit\stt_eval_kit\stt_eval_notebook.ipynb")
-    out_path.write_text(json.dumps(notebook, ensure_ascii=False, indent=1), encoding="utf-8")
-    print(f"Successfully created notebook with {len(notebook['cells'])} cells at {out_path}")
+    nb_obj = generate_notebook()
+    out = Path(r"c:\Users\youse\Dropbox\PC\Downloads\stt_eval_kit\stt_eval_kit\stt_eval_notebook.ipynb")
+    out.write_text(json.dumps(nb_obj, ensure_ascii=False, indent=1), encoding="utf-8")
+    print(f"Generated updated notebook with {len(nb_obj['cells'])} cells at {out}")

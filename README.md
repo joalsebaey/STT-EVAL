@@ -16,7 +16,7 @@ Evaluate and stress-test your models against clean speech, synthetic & real nois
 ## 🌟 Highlights
 
 - **🤖 Model Agnostic**: Benchmark any HuggingFace model (`openai/whisper-small`, `large-v3-turbo`, fine-tuned models), local directory checkpoints, or custom Python inference functions (PyTorch, ONNX, Faster-Whisper, etc.).
-- **📂 Universal Dataset Ingestion**: Drop in custom datasets formatted as CSV, TSV, JSON, JSONL, audio folders with `.txt` transcripts, or `.zip` archives. Smart column auto-detection and automatic 16 kHz mono conversion.
+- **🌍 Dialectal Arabic & Ingestion**: Stream the multi-dialect `oddadmix/dialectal-arabic-lahgtna-v2` dataset directly from HuggingFace, or drop in custom datasets formatted as CSV, TSV, JSON, JSONL, audio folders, or `.zip` archives. Full per-dialect WER & CER breakdown.
 - **🔊 Acoustic Robustness & Stress-Testing**:
   - **White Noise**: Multi-level additive noise at 20 dB, 10 dB, and 5 dB SNR.
   - **Telephony Filter**: 300–3400 Hz bandpass, 8 kHz downsampling, and 8-bit $\mu$-law companding.
@@ -30,8 +30,8 @@ Evaluate and stress-test your models against clean speech, synthetic & real nois
   - **Real-Time Factor (RTF)** for speed/latency profiling.
   - **Failure Flags**: Automatically flags empty predictions, repetitive hallucination loops, excessively long generations, and foreign script / language identification failures.
   - **Top Confusions**: Word-level error alignment matrix (`top_confusions.csv`).
-  - **Worst Utterances**: Ranked worst-performing audio samples (`worst_30.csv`) with interactive audio playback.
-- **📓 Google Colab & Jupyter Ready**: A self-contained, 30-cell interactive notebook (`stt_eval_notebook.ipynb`) equipped with audio players, matplotlib dashboards, and auto-downloading reports.
+  - **🔤 Configurable Text Normalization**: Strips Arabic diacritics, unifies orthographic variants (alef, ya, ta marbuta), maps numerals, and automatically cleans audio annotation tags (e.g., `<music>`, `[applause]`, `(laughter)`).
+- **📓 Google Colab & Jupyter Ready**: A self-contained, interactive notebook (`stt_eval_notebook.ipynb`) equipped with audio players, matplotlib dashboards, and auto-downloading reports.
 
 ---
 
@@ -163,7 +163,7 @@ python run_eval.py \
 | `--conditions` | Robustness conditions to run (`clean`, `white_10dB`, `telephone`, etc.) | *All conditions* |
 | `--noise-dir` | Folder containing real noise audio files to mix | `None` |
 | `--max-samples` | Limit number of evaluated samples (`0` = all samples) | `100` |
-| `--batch-size` | Batch size for inference | `8` |
+| `--batch-size` | Batch size for inference | `16` |
 | `--seed` | Random seed for sampling and perturbations | `42` |
 
 ---
